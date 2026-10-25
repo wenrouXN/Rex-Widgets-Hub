@@ -354,10 +354,10 @@ async function doUploadMods(input){
   input.value='';
 }
 
-function copyModLink(id){ copyText(org()+'/api/modules/'+id+'/raw'); }
+function copyModLink(id){ copyText(org()+'/api/modules/'+id+'.js'); }
 // 一键添加到 Rex：跳转 rex://widget?url=<模块/合集订阅链接>
 function addToRex(url){ location.href='rex://widget?url='+url; }
-function addToRexMod(id){ addToRex(org()+'/api/modules/'+id+'/raw'); }
+function addToRexMod(id){ addToRex(org()+'/api/modules/'+id+'.js'); }
 function addToRexCol(slug){ addToRex(org()+'/api/collections/'+slug+'.rex'); }
 function toggleMenu(e, id) {
   e.stopPropagation();
@@ -1122,7 +1122,7 @@ export default {
           const u = new URL(body.url);
           filename = u.pathname.split('/').pop() || 'import.js';
         }
-        const meta = parseMeta(filename, new Uint8Array(buf.slice(0, 2048)));
+        const meta = parseMeta(filename, new Uint8Array(buf));
         const exist = mods.find(m => m.source_url === body.url || (meta.id && m.widget_id === meta.id));
         const id = exist ? exist.id : genId();
         const mod = {
@@ -1181,14 +1181,15 @@ export default {
           if (!(file instanceof File) || !file.name) continue;
           const buf = await file.arrayBuffer();
           if (buf.byteLength > 25*1024*1024) return json({ error: 'File too large (KV limit 25MB): ' + file.name }, 413);
-          const meta = parseMeta(file.name, new Uint8Array(buf.slice(0,2048)));
+          const meta = parseMeta(file.name, new Uint8Array(buf));
           
           const exist = mods.find(m => (meta.id && m.widget_id === meta.id) || m.filename === file.name);
           const base = {
             filename: file.name,
             widget_id: meta.id || (exist ? exist.id : ''),
             title: meta.title || file.name.replace(/\.js$/,''),
-            version: meta.version || '', author: meta.author || '',
+            version: meta.version || '', required_version: meta.requiredVersion || '',
+            author: meta.author || '',
             file_size: buf.byteLength,
             is_encrypted: isEncrypted(new Uint8Array(buf)),
             updated_at: now
@@ -1261,11 +1262,12 @@ export default {
         if (!(file instanceof File)) return json({ error: 'No file' }, 400);
         const buf = await file.arrayBuffer();
         if (buf.byteLength > 25*1024*1024) return json({ error: 'File too large (KV limit 25MB)' }, 413);
-        const meta = parseMeta(file.name, new Uint8Array(buf.slice(0,2048)));
+        const meta = parseMeta(file.name, new Uint8Array(buf));
         mod.filename = file.name;
         mod.widget_id = meta.id || mod.id;
         mod.title = meta.title || file.name.replace(/\.js$/,'');
         mod.version = meta.version || '';
+        mod.required_version = meta.requiredVersion || '';
         mod.author = meta.author || '';
         mod.file_size = buf.byteLength;
         mod.is_encrypted = isEncrypted(new Uint8Array(buf));
@@ -1291,9 +1293,10 @@ export default {
         if (!remoteResp.ok) return json({ error: 'Failed to fetch: '+remoteResp.status }, 400);
         const buf = await remoteResp.arrayBuffer();
         if (buf.byteLength > 25*1024*1024) return json({ error: 'File too large (KV limit 25MB)' }, 413);
-        const meta = parseMeta(mod.filename, new Uint8Array(buf.slice(0, 2048)));
+        const meta = parseMeta(mod.filename, new Uint8Array(buf));
         mod.title = meta.title || mod.title;
         mod.version = meta.version || '';
+        mod.required_version = meta.requiredVersion || '';
         mod.author = meta.author || '';
         mod.file_size = buf.byteLength;
         mod.is_encrypted = isEncrypted(new Uint8Array(buf));
@@ -1326,10 +1329,11 @@ export default {
         if (content === null) return json({ error: 'content required' }, 400);
         const bytes = new TextEncoder().encode(content);
         if (bytes.byteLength > 25*1024*1024) return json({ error: 'File too large (KV limit 25MB)' }, 413);
-        const meta = parseMeta(mod.filename, bytes.slice(0, 2048));
+        const meta = parseMeta(mod.filename, bytes);
         mod.widget_id = meta.id || mod.id;
         mod.title = meta.title || mod.title;
         mod.version = meta.version || '';
+        mod.required_version = meta.requiredVersion || '';
         mod.author = meta.author || '';
         mod.file_size = bytes.byteLength;
         mod.is_encrypted = isEncrypted(bytes);
@@ -1402,7 +1406,7 @@ export default {
         const buf = new TextEncoder().encode(f.content).buffer;
         if (buf.byteLength > 25*1024*1024) continue;
         const filename = f.filename || 'restored.js';
-        const meta = parseMeta(filename, new Uint8Array(buf.slice(0,2048)));
+        const meta = parseMeta(filename, new Uint8Array(buf));
         const now = Date.now();
         const base = {
           filename,
@@ -1583,7 +1587,7 @@ export default {
             try {
               const head = await env.REX_KV.get('file:'+mid, 'arrayBuffer');
               if (head) {
-                const meta = parseMeta(m.filename, new Uint8Array(head.slice(0, 2048)));
+                const meta = parseMeta(m.filename, new Uint8Array(head));
                 wid = meta.id || mid;
               }
             } catch(e) { wid = mid; }
@@ -1593,7 +1597,7 @@ export default {
             id: wid,
             title: m.title || m.filename,
             description: m.note || '',
-            requiredVersion: '0.0.1',
+            requiredVersion: m.required_version || '0.0.1',
             version: m.version || '1.0.0',
             author: m.author || '',
             url: url.origin + '/api/modules/' + m.id + '/raw'
@@ -1607,7 +1611,7 @@ export default {
             try {
               const head = await env.REX_KV.get('file:'+mid, 'arrayBuffer');
               if (head) {
-                const meta = parseMeta(m.filename, new Uint8Array(head.slice(0, 2048)));
+                const meta = parseMeta(m.filename, new Uint8Array(head));
                 wid = meta.id || wid;
               }
             } catch(e) {}
@@ -1616,7 +1620,7 @@ export default {
             id: wid,
             title: m.title || m.filename,
             description: m.note || '',
-            requiredVersion: '0.0.1',
+            requiredVersion: m.required_version || '0.0.1',
             version: m.version || '1.0.0',
             author: m.author || '',
             url: url.origin + '/api/modules/' + mid + '/raw'
@@ -1631,7 +1635,11 @@ export default {
     }
 
     
-    const rawMatch = path.match(/^\/api\/modules\/([^\/]+)\/raw$/) || path.match(/^\/api\/modules\/([^\/]+)$/);
+    // [FIX-2026-10-25] Rex 可能按 .js 后缀判断文件类型：官方 5 个模块 + duanju 全是 .js 结尾。
+    // 同时接受 /raw、/raw.js、<id>.js 三种形态。
+    const rawMatch = path.match(/^\/api\/modules\/([^\/]+)\/raw(?:\.js)?$/)
+                  || path.match(/^\/api\/modules\/([^\/]+)\.js$/)
+                  || path.match(/^\/api\/modules\/([^\/]+)$/);
     if (rawMatch) {
       const buf = await env.REX_KV.get('file:'+rawMatch[1], 'arrayBuffer');
       if (!buf) return json({ error: 'File not found' }, 404);
@@ -1693,8 +1701,25 @@ function genId() { return crypto.randomUUID(); }
 function pinyinSlug(t) {
   return t.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g,'-').replace(/^-|-$/g,'').substring(0,60) || 'untitled';
 }
-function parseMeta(fn, head) {
-  const t = new TextDecoder().decode(head);
+function parseMeta(fn, bytes) {
+  // 快路径：绝大多数模块 WidgetMetadata 在文件前部，只解前 2KB
+  const quick = parseMetaOnce(new TextDecoder().decode(bytes.slice(0, 2048)));
+  if (quick.id) return quick;
+  // 慢路径：WidgetMetadata 在文件后部（如 danmu_auto.js 在 1.3MB 处）
+  if (bytes.length <= 2048) return quick;
+  const full = parseMetaOnce(new TextDecoder().decode(bytes));
+  return Object.keys(full).length > Object.keys(quick).length ? full : quick;
+}
+function unescapeJsString(v) {
+  if (typeof v !== 'string' || v.indexOf('\\') < 0) return v;
+  try {
+    return v.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+            .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+            .replace(/\\n/g, '\n').replace(/\\t/g, '\t')
+            .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  } catch (e) { return v; }
+}
+function parseMetaOnce(t) {
   const meta = {};
   
   const m = t.match(/\/\*[\s\S]*?WidgetMetadata\s*\{/) || t.match(/WidgetMetadata\s*=\s*\{/);
@@ -1711,7 +1736,23 @@ function parseMeta(fn, head) {
     const body = t.slice(start, i - 1);
     
     const pairs = body.match(/(\w+)\s*:\s*"([^"]*)"/g);
-    if (pairs) pairs.forEach(x => { const kv = x.match(/(\w+)\s*:\s*"([^"]*)"/); if (kv && !meta[kv[1]]) meta[kv[1]] = kv[2]; });
+    if (pairs) pairs.forEach(x => {
+      const kv = x.match(/(\w+)\s*:\s*"([^"]*)"/);
+      if (kv && !meta[kv[1]]) meta[kv[1]] = unescapeJsString(kv[2]);
+    });
+    // 变量引用兜底：version: wv 这类写法
+    if (!meta.version || !meta.title) {
+      const before = t.slice(0, m.index);
+      for (const key of ['version', 'title']) {
+        if (meta[key]) continue;
+        const ref = body.match(new RegExp('\\b' + key + '\\s*:\\s*([A-Za-z_$][\\w$]*)'));
+        if (!ref) continue;
+        const varName = ref[1];
+        const decl = before.match(new RegExp('(?:var|let|const)\\s+' + varName +
+          '\\s*=\\s*"([^"]*)"'));
+        if (decl) meta[key] = unescapeJsString(decl[1]);
+      }
+    }
   }
   return meta;
 }

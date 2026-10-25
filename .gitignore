@@ -1,0 +1,16 @@
+# 本地配置（含公网地址/密钥），不跟踪、不推送
+.env.local
+.env
+.secrets.json
+
+# 凭据
+*凭据*
+HUB-凭据.txt
+
+# 依赖与缓存
+node_modules/
+.wrangler/
+dist/
+
+# 系统
+.DS_Store
