@@ -1180,21 +1180,27 @@ export default {
         // 就永远无法远程刷新（/refresh 会 400 "No source URL"）
         const fdSourceUrl = String(fd.get('source_url') || '').trim();
         const now = Date.now(); const added = []; const updated = [];
+        // [FIX-2026-10-26] Cloudflare 的 formData() 会把纯文本 JS 的 file 字段解析成
+        // **字符串**（PUT 分支已修，POST 分支漏了）：此时 file.name 为 undefined，
+        // 直接 file.name.replace() 会 500；而且 base.filename 落成 undefined，
+        // 后续上传会以 `m.filename === undefined` 误命中同一条记录并覆盖它
+        // （实测把 MissAV 模块内容整个覆盖成 Pornhub）。⇒ 字符串形态必须显式取文件名。
+        const fdFilename = String(fd.get('filename') || '').trim();
         for (const file of files) {
-          // [FIX-2026-10-25] 同 PUT：字符串形态也要接受
           const isF = file instanceof File;
           const isS = typeof file === 'string';
-          if ((!isF && !isS) || (isF && !file.name)) continue;
+          if (!isF && !isS) continue;
+          const name = (isF && file.name) ? file.name : (fdFilename || ('module-' + Date.now() + '.js'));
           const buf = isF ? await file.arrayBuffer()
                           : new TextEncoder().encode(file).buffer;
-          if (buf.byteLength > 25*1024*1024) return json({ error: 'File too large (KV limit 25MB): ' + file.name }, 413);
-          const meta = parseMeta(file.name, new Uint8Array(buf));
+          if (buf.byteLength > 25*1024*1024) return json({ error: 'File too large (KV limit 25MB): ' + name }, 413);
+          const meta = parseMeta(name, new Uint8Array(buf));
           
-          const exist = mods.find(m => (meta.id && m.widget_id === meta.id) || m.filename === file.name);
+          const exist = mods.find(m => (meta.id && m.widget_id === meta.id) || (m.filename && m.filename === name));
           const base = {
-            filename: file.name,
+            filename: name,
             widget_id: meta.id || (exist ? exist.id : ''),
-            title: meta.title || file.name.replace(/\.js$/,''),
+            title: meta.title || name.replace(/\.js$/,''),
             version: meta.version || '', required_version: meta.requiredVersion || '',
             author: meta.author || '',
             source_url: fdSourceUrl || (exist ? (exist.source_url || '') : ''),
@@ -1780,9 +1786,12 @@ function parseMetaOnce(t) {
     }
     const body = t.slice(start, i - 1);
     
-    const pairs = body.match(/(\w+)\s*:\s*"([^"]*)"/g);
+    // [FIX-2026-10-26] 支持 JSON 风格带引号的键：`"id": "jable_int"`。
+    // 上游正则 `(\w+)\s*:\s*"..."` 要求键是裸标识符，遇到整块带引号的模块
+    // （如 jable_int v2.0.0）会解析出空 meta ⇒ 上传时 500 / 元数据全丢。
+    const pairs = body.match(/["']?\b(\w+)["']?\s*:\s*"((?:[^"\\]|\\.)*)"/g);
     if (pairs) pairs.forEach(x => {
-      const kv = x.match(/(\w+)\s*:\s*"([^"]*)"/);
+      const kv = x.match(/["']?\b(\w+)["']?\s*:\s*"((?:[^"\\]|\\.)*)"/);
       if (kv && !meta[kv[1]]) meta[kv[1]] = unescapeJsString(kv[2]);
     });
     // 变量引用兜底：version: wv 这类写法

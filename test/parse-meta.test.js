@@ -146,5 +146,34 @@ test('cmpVersion 正确比较版本', () => {
   assert.strictEqual(cmpVersion('v2.0', '1.9'), 1, 'v 前缀要忽略');
 });
 
+// ── 11. 【核心】JSON 风格带引号的键（jable_int v2.0.0 场景）
+test('带引号的键 "id": "xxx" 能解析', () => {
+  const r = meta(`WidgetMetadata = {
+  "id": "jable_int",
+  "title": "Jable",
+  "description": "修复声音&恢复大量分类",
+  "author": "nibiru｜MakkaPakka｜蝴蝶",
+  "version": "2.0.0",
+  "requiredVersion": "0.0.2",
+  "modules": []
+};`);
+  assert.strictEqual(r.id, 'jable_int', '带引号的 id 不能解析成空');
+  assert.strictEqual(r.title, 'Jable');
+  assert.strictEqual(r.version, '2.0.0');
+  assert.strictEqual(r.requiredVersion, '0.0.2');
+  assert.strictEqual(r.author, 'nibiru｜MakkaPakka｜蝴蝶');
+});
+
+// ── 12. 字符串值里带转义引号不截断
+test('字符串值含 \\" 时能完整解析', () => {
+  const r = meta(`WidgetMetadata = {
+  id: "esc.test",
+  title: "A \\"quoted\\" title",
+  version: "1.0.0"
+};`);
+  assert.strictEqual(r.id, 'esc.test');
+  assert.strictEqual(r.title, 'A "quoted" title');
+});
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);
