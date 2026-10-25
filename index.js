@@ -1164,7 +1164,7 @@ export default {
           const now = Date.now();
           const id = genId();
           const buf = new TextEncoder().encode(code);
-          const mod = { id: id, widget_id: id, filename: title.replace(/[^\w\u4e00-\u9fa5.\-]+/g, '_') + '.js', title: title, version: '', author: '', note: '', file_size: buf.byteLength, is_encrypted: false, official: body.official !== false, created_at: now, updated_at: now };
+          const mod = { id: id, widget_id: id, filename: title.replace(/[^\w\u4e00-\u9fa5.\-]+/g, '_') + '.js', title: title, version: '', author: '', note: '', source_url: String(body.source_url || '').trim(), file_size: buf.byteLength, is_encrypted: false, official: body.official !== false, created_at: now, updated_at: now };
           mods.push(mod);
           await env.REX_KV.put('file:' + id, buf);
           await saveModules(mods);
@@ -1176,10 +1176,17 @@ export default {
         }
         const fd = await request.formData();
         const files = fd.getAll('files');
+        // [FIX-2026-10-25] 上传时允许携带源头 URL，否则模块一旦走文件上传
+        // 就永远无法远程刷新（/refresh 会 400 "No source URL"）
+        const fdSourceUrl = String(fd.get('source_url') || '').trim();
         const now = Date.now(); const added = []; const updated = [];
         for (const file of files) {
-          if (!(file instanceof File) || !file.name) continue;
-          const buf = await file.arrayBuffer();
+          // [FIX-2026-10-25] 同 PUT：字符串形态也要接受
+          const isF = file instanceof File;
+          const isS = typeof file === 'string';
+          if ((!isF && !isS) || (isF && !file.name)) continue;
+          const buf = isF ? await file.arrayBuffer()
+                          : new TextEncoder().encode(file).buffer;
           if (buf.byteLength > 25*1024*1024) return json({ error: 'File too large (KV limit 25MB): ' + file.name }, 413);
           const meta = parseMeta(file.name, new Uint8Array(buf));
           
@@ -1190,6 +1197,7 @@ export default {
             title: meta.title || file.name.replace(/\.js$/,''),
             version: meta.version || '', required_version: meta.requiredVersion || '',
             author: meta.author || '',
+            source_url: fdSourceUrl || (exist ? (exist.source_url || '') : ''),
             file_size: buf.byteLength,
             is_encrypted: isEncrypted(new Uint8Array(buf)),
             updated_at: now
@@ -1249,6 +1257,7 @@ export default {
         if (body.author !== undefined) mod.author = body.author;
         if (body.note !== undefined) mod.note = body.note;
         if (body.official !== undefined) mod.official = !!body.official;
+        if (body.source_url !== undefined) mod.source_url = String(body.source_url || '').trim();
         mod.updated_at = Date.now();
         await saveModules(mods);
         return json({ ok: true });
@@ -1259,22 +1268,34 @@ export default {
         if (!mod) return json({ error: 'Not found' }, 404);
         const fd = await request.formData();
         const file = fd.get('file');
-        if (!(file instanceof File)) return json({ error: 'No file' }, 400);
-        const buf = await file.arrayBuffer();
+        // [FIX-2026-10-25] 真因：Cloudflare 的 formData() 可能把 file 字段解析成
+        // **字符串**（纯文本 JS 时），此时 `instanceof File` 为 false ⇒ 一律 400。
+        // 上游从一开始就坏，部署上游原版同样 400 "No file"。
+        const fileIsFile = file instanceof File;
+        const fileIsStr = typeof file === 'string';
+        if (!fileIsFile && !fileIsStr) {
+          return json({ error: 'No file' }, 400);
+        }
+        // [FIX-2026-10-25] PUT 覆盖时可带 source_url；不带则保留原值
+        const putSourceUrl = String(fd.get('source_url') || '').trim();
+        const buf = fileIsFile ? await file.arrayBuffer()
+                               : new TextEncoder().encode(file).buffer;
         if (buf.byteLength > 25*1024*1024) return json({ error: 'File too large (KV limit 25MB)' }, 413);
-        const meta = parseMeta(file.name, new Uint8Array(buf));
-        mod.filename = file.name;
+        const fileName = fileIsFile ? file.name : (String(fd.get('filename') || '') || mod.filename || 'module.js');
+        const meta = parseMeta(fileName, new Uint8Array(buf));
+        mod.filename = fileName;
         mod.widget_id = meta.id || mod.id;
-        mod.title = meta.title || file.name.replace(/\.js$/,'');
+        mod.title = meta.title || fileName.replace(/\.js$/,'');
         mod.version = meta.version || '';
         mod.required_version = meta.requiredVersion || '';
         mod.author = meta.author || '';
         mod.file_size = buf.byteLength;
         mod.is_encrypted = isEncrypted(new Uint8Array(buf));
+        if (putSourceUrl) mod.source_url = putSourceUrl;
         mod.updated_at = Date.now();
         await env.REX_KV.put('file:'+id, buf);
         await saveModules(mods);
-        return json({ ok: true });
+        return json({ ok: true, source_url: mod.source_url || '' });
       }
     }
 
@@ -1294,6 +1315,17 @@ export default {
         const buf = await remoteResp.arrayBuffer();
         if (buf.byteLength > 25*1024*1024) return json({ error: 'File too large (KV limit 25MB)' }, 413);
         const meta = parseMeta(mod.filename, new Uint8Array(buf));
+        // [FIX-2026-10-25] 降级护栏：CDN 边缘缓存不一致时，远程刷新可能拉到更旧的版本
+        // （实测 jsdelivr @main 经 Cloudflare 出网拿到 1.21.6，本机拿到 1.21.7）
+        const force = url.searchParams.get('force') === '1';
+        const cmp = cmpVersion(meta.version, mod.version);
+        if (!force && cmp !== null && cmp < 0) {
+          return json({
+            error: 'Refused: remote is older than current (' + meta.version + ' < ' + mod.version + ')',
+            remote_version: meta.version, current_version: mod.version,
+            hint: '加 ?force=1 强制覆盖'
+          }, 409);
+        }
         mod.title = meta.title || mod.title;
         mod.version = meta.version || '';
         mod.required_version = meta.requiredVersion || '';
@@ -1700,6 +1732,19 @@ async function sha256(t) {
 function genId() { return crypto.randomUUID(); }
 function pinyinSlug(t) {
   return t.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g,'-').replace(/^-|-$/g,'').substring(0,60) || 'untitled';
+}
+// 语义化版本比较：a > b 返回 1，a < b 返回 -1，相等 0，无法解析返回 null
+function cmpVersion(a, b) {
+  const norm = v => String(v || '').replace(/^v/i, '').split(/[.+-]/)
+    .map(x => parseInt(x, 10)).filter(x => !isNaN(x));
+  const pa = norm(a), pb = norm(b);
+  if (!pa.length || !pb.length) return null;
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x > y) return 1;
+    if (x < y) return -1;
+  }
+  return 0;
 }
 function parseMeta(fn, bytes) {
   // 快路径：绝大多数模块 WidgetMetadata 在文件前部，只解前 2KB

@@ -130,5 +130,21 @@ WidgetMetadata = { id: "commented", version: "3.0.0" };
   assert.strictEqual(r.id, 'commented');
 });
 
+// ── 10. 版本比较（降级护栏依赖）
+test('cmpVersion 正确比较版本', () => {
+  const src2 = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+  const s2 = src2.indexOf('function cmpVersion');
+  const e2 = src2.indexOf('function parseMeta(fn, bytes)');
+  const { cmpVersion } = new Function(
+    src2.slice(s2, e2) + '\nreturn { cmpVersion };'
+  )();
+  assert.strictEqual(cmpVersion('1.21.7', '1.21.6'), 1, '新版 > 旧版');
+  assert.strictEqual(cmpVersion('1.21.6', '1.21.7'), -1, '旧版 < 新版（降级要拦住）');
+  assert.strictEqual(cmpVersion('1.0.0', '1.0.0'), 0);
+  assert.strictEqual(cmpVersion('1.10.0', '1.9.0'), 1, '数值比较不是字符串比较');
+  assert.strictEqual(cmpVersion('', '1.0.0'), null, '空版本无法比较');
+  assert.strictEqual(cmpVersion('v2.0', '1.9'), 1, 'v 前缀要忽略');
+});
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);
