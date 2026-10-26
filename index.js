@@ -1186,6 +1186,15 @@ export default {
         // 后续上传会以 `m.filename === undefined` 误命中同一条记录并覆盖它
         // （实测把 MissAV 模块内容整个覆盖成 Pornhub）。⇒ 字符串形态必须显式取文件名。
         const fdFilename = String(fd.get('filename') || '').trim();
+        // [FIX-2026-10-26] 加密模块（REXENC v2）的 WidgetMetadata 全在密文里，
+        // parseMeta 一个字都读不出来 → widget_id 落成 UUID、title 落成文件名、
+        // version 为空，Rex 客户端会因为 id 不合法而拒绝加载。
+        // ⇒ 允许上传时用表单字段显式指定元数据（只在 parseMeta 读不到时兜底）。
+        const fdWidgetId = String(fd.get('widget_id') || '').trim();
+        const fdTitle = String(fd.get('title') || '').trim();
+        const fdVersion = String(fd.get('version') || '').trim();
+        const fdAuthor = String(fd.get('author') || '').trim();
+        const fdNote = String(fd.get('note') || '').trim();
         for (const file of files) {
           const isF = file instanceof File;
           const isS = typeof file === 'string';
@@ -1195,27 +1204,28 @@ export default {
                           : new TextEncoder().encode(file).buffer;
           if (buf.byteLength > 25*1024*1024) return json({ error: 'File too large (KV limit 25MB): ' + name }, 413);
           const meta = parseMeta(name, new Uint8Array(buf));
-          
+          const enc = isEncrypted(new Uint8Array(buf));
           const exist = mods.find(m => (meta.id && m.widget_id === meta.id) || (m.filename && m.filename === name));
           const base = {
             filename: name,
-            widget_id: meta.id || (exist ? exist.id : ''),
-            title: meta.title || name.replace(/\.js$/,''),
-            version: meta.version || '', required_version: meta.requiredVersion || '',
-            author: meta.author || '',
+            widget_id: meta.id || fdWidgetId || (exist ? exist.id : ''),
+            title: meta.title || fdTitle || name.replace(/\.js$/,''),
+            version: meta.version || fdVersion || '', required_version: meta.requiredVersion || '',
+            author: meta.author || fdAuthor || '',
             source_url: fdSourceUrl || (exist ? (exist.source_url || '') : ''),
             file_size: buf.byteLength,
-            is_encrypted: isEncrypted(new Uint8Array(buf)),
+            is_encrypted: enc,
             updated_at: now
           };
+          if (fdNote && (!exist || !exist.note)) base.note = fdNote;
           if (exist) {
             Object.assign(exist, base);
-            if (!meta.id) exist.widget_id = exist.id;
+            if (!meta.id && !fdWidgetId) exist.widget_id = exist.id;
             await env.REX_KV.put('file:'+exist.id, buf);
             updated.push(exist);
           } else {
             const id = genId();
-            const mod = Object.assign({ id, note: '', created_at: now }, base, { widget_id: meta.id || id });
+            const mod = Object.assign({ id, note: fdNote || '', created_at: now }, base, { widget_id: meta.id || fdWidgetId || id });
             mods.push(mod);
             added.push(mod);
             await env.REX_KV.put('file:'+id, buf);
@@ -1289,12 +1299,20 @@ export default {
         if (buf.byteLength > 25*1024*1024) return json({ error: 'File too large (KV limit 25MB)' }, 413);
         const fileName = fileIsFile ? file.name : (String(fd.get('filename') || '') || mod.filename || 'module.js');
         const meta = parseMeta(fileName, new Uint8Array(buf));
+        // [FIX-2026-10-26] 加密模块（REXENC v2）的元数据在密文里，parseMeta 读不到 →
+        // 老代码会把 widget_id 覆盖成 UUID、title 覆盖成文件名（实测把 cat-kids 的
+        // widget_id 打回 5a311317-… 导致 Rex 拒绝加载）。⇒ 读不到就**保留原值**，
+        // 并支持表单字段显式指定。
+        const putWidgetId = String(fd.get('widget_id') || '').trim();
+        const putTitle = String(fd.get('title') || '').trim();
+        const putVersion = String(fd.get('version') || '').trim();
+        const putAuthor = String(fd.get('author') || '').trim();
         mod.filename = fileName;
-        mod.widget_id = meta.id || mod.id;
-        mod.title = meta.title || fileName.replace(/\.js$/,'');
-        mod.version = meta.version || '';
-        mod.required_version = meta.requiredVersion || '';
-        mod.author = meta.author || '';
+        mod.widget_id = meta.id || putWidgetId || mod.widget_id || mod.id;
+        mod.title = meta.title || putTitle || mod.title || fileName.replace(/\.js$/,'');
+        if (meta.version || putVersion) mod.version = meta.version || putVersion;
+        mod.required_version = meta.requiredVersion || mod.required_version || '';
+        if (meta.author || putAuthor) mod.author = meta.author || putAuthor;
         mod.file_size = buf.byteLength;
         mod.is_encrypted = isEncrypted(new Uint8Array(buf));
         if (putSourceUrl) mod.source_url = putSourceUrl;
@@ -1823,6 +1841,14 @@ function rexSafeText(s) {
 }
 
 function isEncrypted(buf) {
+  // [FIX-2026-10-26] REXENC v2 是**文本**格式（`REXENC\n{json header}\n<base64>`），
+  // 开头既没有 0xAE 也没有 0xFE，老的二进制魔数判断认不出来 → 会被当成明文模块，
+  // 于是 parseMeta 去密文里捞 id/title（捞不到），合集里 widget_id 落成 UUID、
+  // 标题落成文件名。这里先认文本魔数。
+  if (buf.length >= 6) {
+    const magic = String.fromCharCode(buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
+    if (magic === 'REXENC') return 1;
+  }
   for (let i = 0; i < Math.min(buf.length, 32); i++) {
     if (buf[i] === 0xAE || buf[i] === 0xFE) return 1;
   }
