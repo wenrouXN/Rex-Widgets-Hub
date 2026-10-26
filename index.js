@@ -1633,11 +1633,11 @@ export default {
           wid = wid || mid;
           widgets.push({
             id: wid,
-            title: m.title || m.filename,
-            description: m.note || '',
+            title: rexSafeText(m.title || m.filename),
+            description: rexSafeText(m.note || ''),
             requiredVersion: m.required_version || '0.0.1',
             version: m.version || '1.0.0',
-            author: m.author || '',
+            author: rexSafeText(m.author || ''),
             url: url.origin + '/api/modules/' + m.id + '/raw'
           });
         }
@@ -1656,17 +1656,17 @@ export default {
           }
           widgets.push({
             id: wid,
-            title: m.title || m.filename,
-            description: m.note || '',
+            title: rexSafeText(m.title || m.filename),
+            description: rexSafeText(m.note || ''),
             requiredVersion: m.required_version || '0.0.1',
             version: m.version || '1.0.0',
-            author: m.author || '',
+            author: rexSafeText(m.author || ''),
             url: url.origin + '/api/modules/' + mid + '/raw'
           });
         }
       }
       return json({
-        title: col.title, description: col.description || '',
+        title: rexSafeText(col.title), description: col.description || '',
         icon: col.icon_url || '',
         widgets: widgets
       }, 200, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=60' });
@@ -1810,6 +1810,18 @@ function parseMetaOnce(t) {
   }
   return meta;
 }
+// [FIX-2026-10-26] Rex 客户端对**源 JSON 的文本字段**有一条未文档化的校验：
+// 合集/模块的 title、description、author 里出现**独立单词 Rex**（大小写不敏感，
+// 前后紧邻字母才算例外，即 Rexx / RexNow 通过）⇒ 整个订阅被拒，报
+// 「模块信息校验失败，请修改后重试」，且不说是哪个字段。
+// 实测（DemoJameson 最小复现 + 本机 rex.pornhub 的 author="Rex"）：
+//   Rex / rex / REX / "Rex-" / "rex.xxx" 全部命中；模块 .js 内部文案不校验。
+// ⇒ 出 .rex 时统一把独立 Rex 替换成 RexNow（保持可读、且不触发规则）。
+function rexSafeText(s) {
+  if (typeof s !== 'string' || !s) return s || '';
+  return s.replace(/(?<![A-Za-z])[Rr][Ee][Xx](?![A-Za-z])/g, 'RexNow');
+}
+
 function isEncrypted(buf) {
   for (let i = 0; i < Math.min(buf.length, 32); i++) {
     if (buf[i] === 0xAE || buf[i] === 0xFE) return 1;
